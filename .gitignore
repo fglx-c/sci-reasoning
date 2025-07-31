@@ -1,0 +1,3 @@
+# Ignore training directories with models and logs
+training/models/
+training/log/ 

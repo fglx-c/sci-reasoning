@@ -2,7 +2,6 @@ import logging
 import os
 import re
 import random
-import hashlib
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 
@@ -74,52 +73,6 @@ def extract_solution(solution_str: str) -> str:
     return extract_last_final_answer(solution_str)
 
 
-class ComparisonCache:
-    """Caches comparison results to avoid redundant LLM calls."""
-    
-    def __init__(self, max_size=10000):
-        self.cache = {}  # {(hash_a, hash_b): result}
-        self.access_order = []  # LRU tracking
-        self.max_size = max_size
-    
-    def _sample_hash(self, sample_text: str, question: str, ground_truth: str) -> str:
-        """Create deterministic hash of sample content."""
-        content = sample_text + question + ground_truth
-        return hashlib.md5(content.encode()).hexdigest()[:16]
-    
-    def get_comparison(self, hash_a: str, hash_b: str) -> Optional[str]:
-        """Get cached result, handling order symmetry."""
-        key = tuple(sorted([hash_a, hash_b]))
-        if key in self.cache:
-            # Update LRU order
-            self.access_order.remove(key)
-            self.access_order.append(key)
-            
-            result = self.cache[key]
-            # Return result relative to original order
-            return result if hash_a <= hash_b else ("B" if result == "A" else "A")
-        return None
-    
-    def cache_comparison(self, hash_a: str, hash_b: str, result: str):
-        """Cache comparison result with LRU eviction."""
-        key = tuple(sorted([hash_a, hash_b]))
-        
-        # Adjust result for canonical ordering
-        if hash_a > hash_b and result in ["A", "B"]:
-            result = "B" if result == "A" else "A"
-        
-        # Evict oldest if at capacity
-        if len(self.cache) >= self.max_size and key not in self.cache:
-            oldest_key = self.access_order.pop(0)
-            del self.cache[oldest_key]
-        
-        # Add or update
-        if key in self.cache:
-            self.access_order.remove(key)
-        self.cache[key] = result
-        self.access_order.append(key)
-
-
 class PairwiseRewardModelWorker(Worker):
     """Pairwise ranking-based reward worker."""
 
@@ -130,7 +83,6 @@ class PairwiseRewardModelWorker(Worker):
             temperature=config.pairwise_config.get('comparison_temperature', 0.0), 
             max_tokens=config.pairwise_config.get('max_tokens', 10)
         )
-        self.cache = ComparisonCache(max_size=config.pairwise_config.get('cache_size', 10000))
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def init_model(self):
@@ -200,7 +152,7 @@ class PairwiseRewardModelWorker(Worker):
             response_ids = item.batch["responses"]
             valid_resp_len = int(item.batch["attention_mask"][prompt_len:].sum())
 
-            # Decode response text
+            # Decode response text - Miaosen Chai
             seq = torch.cat((valid_prompt_ids, response_ids[:valid_resp_len]))
             sequence_str = self.tokenizer.decode(seq[-1024:])  # Truncate to last 1024 tokens
             
@@ -243,21 +195,15 @@ class PairwiseRewardModelWorker(Worker):
         return ranking
     
     def _binary_search_insert(self, ranking: List[Dict], new_sample: Dict, question: str, ground_truth: str) -> int:
-        """Find insertion position using cached pairwise comparisons."""
+        """Find insertion position using pairwise comparisons."""
         left, right = 0, len(ranking)
         
         while left < right:
             mid = (left + right) // 2
             mid_sample = ranking[mid]
             
-            # Check cache first
-            hash_mid = self.cache._sample_hash(mid_sample['solution'], question, ground_truth)
-            hash_new = self.cache._sample_hash(new_sample['solution'], question, ground_truth)
-            
-            comparison = self.cache.get_comparison(hash_mid, hash_new)
-            if comparison is None:
-                comparison = self._compare_samples(mid_sample, new_sample, question, ground_truth)
-                self.cache.cache_comparison(hash_mid, hash_new, comparison)
+            # Compare samples directly
+            comparison = self._compare_samples(mid_sample, new_sample, question, ground_truth)
             
             if comparison == "A":  # mid_sample is better
                 left = mid + 1

@@ -11,10 +11,14 @@ echo "Starting GRPO SMALL TEST training with Ray Job Submit for user: $USER_ENV"
 # Environment setup
 export PYTHONUNBUFFERED=1
 # Note: Different Ray commands need different address formats
-export RAY_ADDRESS="172.31.31.243:6379"  # For ray status
+export RAY_ADDRESS="172.30.140.211:6379"  # For ray status
 export RAY_JOB_ADDRESS="http://127.0.0.1:8265"  # For ray job submit (dashboard is localhost-only)
 # Prevent NCCL from hanging on systems without EFA/OFI by disabling the OFI plugin
 export NCCL_NET_OFI_DISABLE=1
+# Bypass proxy for localhost to access Ray dashboard
+export no_proxy="localhost,127.0.0.1"
+# Use conda's libstdc++ to fix GLIBCXX version issues
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
 
 # Ensure a clean Ray runtime by force-stopping any leftovers from previous runs
 echo "Stopping any existing Ray cluster (if running)..."
@@ -22,17 +26,17 @@ ray stop --force || true
 
 # SMALL TEST PARAMETERS - Optimized for minimal testing
 MODEL_NAME="OpenReasoning-Nemotron-1.5B"
-MAX_RESPONSE_LENGTH=512  # Reduced from 8192
-TRAIN_BATCH_SIZE=12      # Divisible by 4 GPUs (validation) and 3 workers (chunking)
-ROLLOUT_N=1              # 1 rollout per sample for minimal testing
+MAX_RESPONSE_LENGTH=8192  # Reduced from 8192
+TRAIN_BATCH_SIZE=1200      # Divisible by 4 GPUs (validation) and 3 workers (chunking)
+ROLLOUT_N=8              # 1 rollout per sample for minimal testing
 KL_LOSS_COEF=0.0001
 ENTROPY_COEF=0.001
-ROLLOUT_GPU_MEMORY_UTIL=0.3  # Further reduced to prevent OOM
+ROLLOUT_GPU_MEMORY_UTIL=0.75  # Further reduced to prevent OOM
 ROLLOUT_TP=1
 SAVE_FREQ=1              # Save after every epoch
-TOTAL_EPOCHS=2           # Only 2 epochs for quick test
+TOTAL_EPOCHS=2          # Only 2 epochs for quick test
 REWARD_STRATEGY="pairwise"  # Default strategy: pairwise or verifier
-PAIRWISE_TEMP=0.0        # Temperature for pairwise comparisons
+PAIRWISE_TEMP=0.7        # Temperature for pairwise comparisons
 PAIRWISE_MAX_TOKENS=10   # Max tokens for pairwise comparison responses
 PAIRWISE_CACHE_SIZE=1000 # Cache size for pairwise comparisons
 
@@ -64,13 +68,13 @@ if [[ "$REWARD_STRATEGY" == "pairwise" && "$ROLLOUT_N" == "1" ]]; then
 fi
 
 # Paths - USING SMALL TEST DATASET
-MODEL_PATH="/home/ec2-user/dataset/training/models/$MODEL_NAME"
-TRAIN_FILE="/home/ec2-user/dataset/simpleRL-reason/simplelr_math_35_small/train.parquet"  # SMALL DATASET
-VAL_FILE="/home/ec2-user/dataset/simpleRL-reason/simplelr_math_35_small/test.parquet"    # SMALL DATASET
-WORKING_DIR="/home/ec2-user/dataset/simpleRL-reason"
+MODEL_PATH="/scratch/miaosenc/sci-reasoning/training/models/$MODEL_NAME"
+TRAIN_FILE="/scratch/miaosenc/sci-reasoning/training/rlvr-training/simplelr_math_35_small/train.parquet"  # SMALL DATASET
+VAL_FILE="/scratch/miaosenc/sci-reasoning/training/rlvr-training/simplelr_math_35_small/test.parquet"    # SMALL DATASET
+WORKING_DIR="/scratch/miaosenc/sci-reasoning/training/rlvr-training"
 
 # Update checkpoint directory name for small test
-CHECKPOINT_DIR="/home/ec2-user/dataset/training/checkpoints/verl-grpo_${MODEL_NAME}_SMALL_TEST_max_response${MAX_RESPONSE_LENGTH}_batch${TRAIN_BATCH_SIZE}_rollout${ROLLOUT_N}_klcoef${KL_LOSS_COEF}_entcoef${ENTROPY_COEF}"
+CHECKPOINT_DIR="/scratch/miaosenc/sci-reasoning/training/log/checkpoints/verl-grpo_${MODEL_NAME}_SMALL_TEST_max_response${MAX_RESPONSE_LENGTH}_batch${TRAIN_BATCH_SIZE}_rollout${ROLLOUT_N}_klcoef${KL_LOSS_COEF}_entcoef${ENTROPY_COEF}"
 
 echo "==========================================="
 echo "GRPO SMALL TEST Training Configuration:"
@@ -94,16 +98,9 @@ echo "Train File: $TRAIN_FILE"
 echo "Val File: $VAL_FILE"
 echo "==========================================="
 
-# Check if conda environment is activated
-if [[ "$CONDA_DEFAULT_ENV" != "mat-verl-py311" ]]; then
-    echo "Activating mat-verl-py311 environment..."
-    source ~/miniconda3/etc/profile.d/conda.sh
-    conda activate mat-verl-py311
-fi
-
-mkdir -p /home/ec2-user/dataset/training/models
-mkdir -p /home/ec2-user/dataset/training/checkpoints  
-mkdir -p /home/ec2-user/dataset/training/logs
+mkdir -p /scratch/miaosenc/sci-reasoning/training/log/models
+mkdir -p /scratch/miaosenc/sci-reasoning/training/log/checkpoints  
+mkdir -p /scratch/miaosenc/sci-reasoning/training/log/logs
 
 # Check if model exists
 if [ ! -d "$MODEL_PATH" ]; then
@@ -127,16 +124,16 @@ mkdir -p "$CHECKPOINT_DIR"
 
 # Check Ray status and dashboard
 echo "Checking Ray cluster and dashboard..."
-export RAY_ADDRESS="172.31.31.243:6379"
+export RAY_ADDRESS="172.30.140.211:6379"
 if ! ray status > /dev/null 2>&1; then
     echo "Ray cluster not running. Starting Ray..."
-    ray start --head --node-ip-address 172.31.31.243 --num-gpus 4
+    ray start --head --node-ip-address 172.30.140.211 --num-gpus 4 --disable-usage-stats
     sleep 10
     echo "Waiting for dashboard to be ready..."
     
     # Wait for dashboard to be accessible
     for i in {1..30}; do
-        if curl -s http://127.0.0.1:8265/api/jobs > /dev/null 2>&1; then
+        if no_proxy="localhost,127.0.0.1" curl -s http://127.0.0.1:8265/api/version > /dev/null 2>&1; then
             echo "Dashboard is ready!"
             break
         fi
@@ -147,16 +144,16 @@ else
     echo "Ray cluster is already running."
     
     # Check if dashboard is accessible
-    if ! curl -s http://127.0.0.1:8265/api/jobs > /dev/null 2>&1; then
+    if ! no_proxy="localhost,127.0.0.1" curl -s http://127.0.0.1:8265/api/jobs > /dev/null 2>&1; then
         echo "Dashboard not accessible. Please restart Ray cluster."
         ray stop --force
-        ray start --head --node-ip-address 172.31.31.243 --num-gpus 4
+        ray start --head --node-ip-address 172.30.140.211 --num-gpus 4 --disable-usage-stats
         sleep 10
     fi
 fi
 
 # Verify Ray dashboard is accessible
-if ! curl -s http://127.0.0.1:8265/api/jobs > /dev/null 2>&1; then
+if ! no_proxy="localhost,127.0.0.1" curl -s http://127.0.0.1:8265/api/jobs > /dev/null 2>&1; then
     echo "Error: Ray dashboard is not accessible at $RAY_JOB_ADDRESS"
     echo "Please check Ray cluster status manually."
     exit 1
@@ -177,7 +174,8 @@ ray job submit \
             "PYTHONUNBUFFERED": "1",
             "TOKENIZERS_PARALLELISM": "true",
             "RAY_OVERRIDE_JOB_RUNTIME_ENV": "1",
-            "NCCL_NET_OFI_DISABLE": "1"
+            "NCCL_NET_OFI_DISABLE": "1",
+            "LD_LIBRARY_PATH": "'$CONDA_PREFIX'/lib:'$LD_LIBRARY_PATH'"
         }
     }' \
     -- python -m verl.trainer.main_ppo \
@@ -216,13 +214,13 @@ ray job submit \
     algorithm.kl_ctrl.kl_coef=0.001 \
     reward_model.enable=True \
     reward_model.strategy=$REWARD_STRATEGY \
-    reward_model.model.path=/home/ec2-user/dataset/training/models/general-verifier \
+    reward_model.model.path=/scratch/miaosenc/sci-reasoning/training/models/general-verifier \
     reward_model.pairwise_config.comparison_temperature=$PAIRWISE_TEMP \
     reward_model.pairwise_config.max_tokens=$PAIRWISE_MAX_TOKENS \
     reward_model.pairwise_config.cache_size=$PAIRWISE_CACHE_SIZE \
     reward_model.pairwise_config.retry_on_invalid=true \
     reward_model.micro_batch_size_per_gpu=1 \
-    critic.model.path=/home/ec2-user/dataset/training/models/OpenReasoning-Nemotron-1.5B \
+    critic.model.path=/scratch/miaosenc/sci-reasoning/training/models/OpenReasoning-Nemotron-1.5B \
     critic.ppo_mini_batch_size=4 \
     critic.ppo_micro_batch_size_per_gpu=1 \
     trainer.critic_warmup=0 \

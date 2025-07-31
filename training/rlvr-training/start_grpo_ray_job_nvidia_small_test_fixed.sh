@@ -1,12 +1,13 @@
 #!/bin/bash
 
-# GRPO Training Script using Ray Job Submit
-# This script uses Ray's job submission API for better job management
+# GRPO Training Script for SMALL TEST DATASET using Ray Job Submit
+# This script is designed for quick testing with minimal data (1 sample)
+# Updated with fixes from successful debugging session
 
 set -e  # Exit on any error
 
 USER_ENV=`whoami`
-echo "Starting GRPO training with Ray Job Submit for user: $USER_ENV"
+echo "Starting GRPO SMALL TEST training with Ray Job Submit for user: $USER_ENV"
 
 # Get machine IP address dynamically
 MACHINE_IP=$(hostname -I | awk '{print $1}')
@@ -28,21 +29,21 @@ export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
 echo "Stopping any existing Ray cluster (if running)..."
 ray stop --force || true
 
-# Default parameters (can be overridden by command line arguments)
+# SMALL TEST PARAMETERS - Optimized for minimal testing
 MODEL_NAME="OpenReasoning-Nemotron-1.5B"
-MAX_RESPONSE_LENGTH=8192
-TRAIN_BATCH_SIZE=240  # Reduced for memory efficiency (divisible by 3,4,12)
-ROLLOUT_N=8
+MAX_RESPONSE_LENGTH=512  # Reduced from 8192
+TRAIN_BATCH_SIZE=12      # Divisible by 4 GPUs (validation) and 3 workers (chunking)
+ROLLOUT_N=1              # 1 rollout per sample for minimal testing
 KL_LOSS_COEF=0.0001
 ENTROPY_COEF=0.001
-ROLLOUT_GPU_MEMORY_UTIL=0.5  # Reduced from 0.75 to prevent OOM
+ROLLOUT_GPU_MEMORY_UTIL=0.3  # Further reduced to prevent OOM
 ROLLOUT_TP=1
-SAVE_FREQ=5
-TOTAL_EPOCHS=20
+SAVE_FREQ=1              # Save after every epoch
+TOTAL_EPOCHS=2           # Only 2 epochs for quick test
 REWARD_STRATEGY="pairwise"  # Default strategy: pairwise or verifier
 PAIRWISE_TEMP=0.0        # Temperature for pairwise comparisons
 PAIRWISE_MAX_TOKENS=10   # Max tokens for pairwise comparison responses
-PAIRWISE_CACHE_SIZE=0 # Cache disabled for hypothesis generation
+PAIRWISE_CACHE_SIZE=1000 # Cache size for pairwise comparisons
 
 # Parse command line arguments
 while [[ "$#" -gt 0 ]]; do
@@ -66,22 +67,22 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 # Automatic adjustments for pairwise strategy
-if [[ "$REWARD_STRATEGY" == "pairwise" && "$ROLLOUT_N" -lt "2" ]]; then
+if [[ "$REWARD_STRATEGY" == "pairwise" && "$ROLLOUT_N" == "1" ]]; then
     echo "⚠️  Pairwise strategy requires multiple samples for comparison. Setting rollout_n=2"
     ROLLOUT_N=2
 fi
 
-# Paths - Updated to use correct scratch paths
+# Paths - USING SMALL TEST DATASET
 MODEL_PATH="/scratch/miaosenc/sci-reasoning/training/models/$MODEL_NAME"
-TRAIN_FILE="/scratch/miaosenc/sci-reasoning/training/rlvr-training/simplelr_math_35/train.parquet"
-VAL_FILE="/scratch/miaosenc/sci-reasoning/training/rlvr-training/simplelr_math_35/test.parquet"
+TRAIN_FILE="/scratch/miaosenc/sci-reasoning/training/rlvr-training/simplelr_math_35_small/train.parquet"  # SMALL DATASET
+VAL_FILE="/scratch/miaosenc/sci-reasoning/training/rlvr-training/simplelr_math_35_small/test.parquet"    # SMALL DATASET
 WORKING_DIR="/scratch/miaosenc/sci-reasoning/training/rlvr-training"
 
-# Update checkpoint directory name to reflect new dataset
-CHECKPOINT_DIR="/scratch/miaosenc/sci-reasoning/training/log/checkpoints/verl-grpo_${MODEL_NAME}_max_response${MAX_RESPONSE_LENGTH}_batch${TRAIN_BATCH_SIZE}_rollout${ROLLOUT_N}_klcoef${KL_LOSS_COEF}_entcoef${ENTROPY_COEF}_simplerl_math_35"
+# Update checkpoint directory name for small test
+CHECKPOINT_DIR="/scratch/miaosenc/sci-reasoning/training/log/checkpoints/verl-grpo_${MODEL_NAME}_SMALL_TEST_max_response${MAX_RESPONSE_LENGTH}_batch${TRAIN_BATCH_SIZE}_rollout${ROLLOUT_N}_klcoef${KL_LOSS_COEF}_entcoef${ENTROPY_COEF}"
 
 echo "==========================================="
-echo "GRPO Training Configuration (Ray Job Submit):"
+echo "GRPO SMALL TEST Training Configuration:"
 echo "Model: $MODEL_NAME"
 echo "Max Response Length: $MAX_RESPONSE_LENGTH"
 echo "Train Batch Size: $TRAIN_BATCH_SIZE"
@@ -101,7 +102,6 @@ echo "Working Dir: $WORKING_DIR"
 echo "Train File: $TRAIN_FILE"
 echo "Val File: $VAL_FILE"
 echo "==========================================="
-
 
 mkdir -p /scratch/miaosenc/sci-reasoning/training/log/models
 mkdir -p /scratch/miaosenc/sci-reasoning/training/log/checkpoints  
@@ -147,10 +147,10 @@ sleep 5
 echo "Skipping dashboard accessibility check (known curl/OpenSSL issues on Holly)"
 echo "Ray cluster is ready for job submission."
 
-echo "Starting GRPO training with Ray Job Submit..."
+echo "Starting GRPO SMALL TEST training with Ray Job Submit..."
 
-# Calculate max tokens
-max_num_batched_tokens=$((1024 + $MAX_RESPONSE_LENGTH + 1000))
+# Calculate max tokens (reduced for test)
+max_num_batched_tokens=$((1024 + $MAX_RESPONSE_LENGTH + 200))
 
 # Submit training job to Ray
 export RAY_ADDRESS="$RAY_JOB_ADDRESS"
@@ -171,14 +171,14 @@ ray job submit \
     data.train_files="$TRAIN_FILE" \
     data.val_files="$VAL_FILE" \
     data.train_batch_size=$TRAIN_BATCH_SIZE \
-    data.val_batch_size=20 \
+    data.val_batch_size=1 \
     data.max_prompt_length=1024 \
     data.max_response_length=$MAX_RESPONSE_LENGTH \
     actor_rollout_ref.model.path="$MODEL_PATH" \
     actor_rollout_ref.rollout.model_path="$MODEL_PATH" \
     actor_rollout_ref.actor.optim.lr=5e-7 \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=60 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=4 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=$KL_LOSS_COEF \
@@ -190,15 +190,15 @@ ray job submit \
     actor_rollout_ref.actor.fsdp_config.grad_offload=True \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.rollout.temperature=1.0 \
-    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.gpu_memory_utilization=$ROLLOUT_GPU_MEMORY_UTIL \
     actor_rollout_ref.rollout.n=$ROLLOUT_N \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.max_num_batched_tokens=$max_num_batched_tokens \
-    actor_rollout_ref.rollout.micro_rollout_batch_size=30 \
-    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
+    actor_rollout_ref.rollout.micro_rollout_batch_size=1 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.001 \
     reward_model.enable=True \
@@ -212,24 +212,27 @@ ray job submit \
     reward_model.micro_batch_size_per_gpu=1 \
     critic.model.path="$MODEL_PATH" \
     critic.model.tokenizer_path="$MODEL_PATH" \
-    critic.ppo_mini_batch_size=60 \
+    critic.ppo_mini_batch_size=4 \
     critic.ppo_micro_batch_size_per_gpu=1 \
     trainer.critic_warmup=0 \
     trainer.logger='[console]' \
-    trainer.project_name=verl_train \
+    trainer.project_name=verl_train_small_test \
     trainer.remove_previous_ckpt=False \
-    trainer.experiment_name="verl-grpo_${MODEL_NAME}_max_response${MAX_RESPONSE_LENGTH}_batch${TRAIN_BATCH_SIZE}_rollout${ROLLOUT_N}_klcoef${KL_LOSS_COEF}_entcoef${ENTROPY_COEF}_simplerl_math_35" \
+    trainer.experiment_name="verl-grpo_${MODEL_NAME}_SMALL_TEST_max_response${MAX_RESPONSE_LENGTH}_batch${TRAIN_BATCH_SIZE}_rollout${ROLLOUT_N}_klcoef${KL_LOSS_COEF}_entcoef${ENTROPY_COEF}" \
     trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
     trainer.remove_clip=False \
     trainer.save_freq=$SAVE_FREQ \
-    trainer.test_freq=5 \
+    trainer.test_freq=1 \
     trainer.default_local_dir="$CHECKPOINT_DIR" \
     trainer.total_epochs=$TOTAL_EPOCHS
 
 echo ""
-echo "Job submitted to Ray cluster!"
+echo "SMALL TEST Job submitted to Ray cluster!"
 echo "You can monitor the job using:"
 echo "  ray job list"
 echo "  ray job logs <job-id>"
 echo "  Ray dashboard: http://127.0.0.1:8265" 
+echo ""
+echo "This small test should complete in ~5-10 minutes!"
+echo "Look for 'step:1' and 'step:2' completion messages." 
